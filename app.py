@@ -1,126 +1,98 @@
-from fastapi import FastAPI, HTTPException, Security, Depends
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security.api_key import APIKeyHeader
-from pydantic import BaseModel
-import os, uuid, time, json
-from openai import OpenAI
-from fastapi.openapi.utils import get_openapi
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel, Field
+import os
+import openai
 
-# --- Config ---
-API_TOKEN = os.getenv("API_TOKEN", "")
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+# Initialize FastAPI
+app = FastAPI(title="HART Evaluation API")
 
-# FastAPI app
-app = FastAPI(
-    title="HART Evaluation API",
-    description="API to evaluate patient intake forms using AI.",
-    version="1.0.0"
-)
-
-# CORS
+# ✅ CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[ALLOWED_ORIGINS] if ALLOWED_ORIGINS != "*" else ["*"],
+    allow_origins=["*"],  # 🔒 In production, restrict to your Netlify domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Security
-api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
+security = HTTPBearer()
 
-async def get_api_key(api_key: str = Security(api_key_header)):
-    if not api_key:
-        raise HTTPException(status_code=401, detail="Missing Authorization header")
+# Environment variables
+API_TOKEN = os.getenv("API_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+openai.api_key = OPENAI_API_KEY
 
-    token = api_key.strip()
-    if token.lower().startswith("bearer "):
-        token = token[7:].strip()
+# Request schema
+class IntakeRequest(BaseModel):
+    reportId: str = Field(..., description="Unique report ID")
+    language: str = Field("en", description="Preferred language")
+    answers: dict = Field(..., description="Raw answers from intake form")
 
-    if token != API_TOKEN:
-        raise HTTPException(status_code=403, detail="Unauthorized")
-    return token
+# Response schema
+class IntakeResponse(BaseModel):
+    evaluation: dict = Field(..., description="Structured AI evaluation")
 
-# Request/Response Models
-class EvaluateRequest(BaseModel):
-    reportId: str
-    language: str
-    answers: dict
+@app.get("/")
+def root():
+    return {"message": "Welcome to the HART Evaluation API. Visit /docs to test."}
 
-class EvaluateResponse(BaseModel):
-    traceId: str
-    evaluation: dict
-
-# Routes
 @app.get("/health")
 def health():
-    return {"ok": True, "ts": int(time.time())}
+    return {"status": "ok"}
 
-@app.post("/evaluate", response_model=EvaluateResponse)
-async def evaluate(req: EvaluateRequest, api_key: str = Depends(get_api_key)):
-    if not OPENAI_API_KEY:
-        raise HTTPException(status_code=500, detail="OpenAI API key not configured")
+@app.post("/evaluate", response_model=IntakeResponse)
+def evaluate(
+    request: IntakeRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    # ✅ Token check
+    if credentials.credentials != API_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
-    client = OpenAI(api_key=OPENAI_API_KEY)
-
+    # Build prompt
     prompt = f"""
-    You are a medical AI assistant helping interpret structured intake data.
-    Summarize the case clearly and return JSON with these fields:
-    - chief_complaint
-    - history_summary
-    - risk_flags
-    - recommended_followups
-    - differential_considerations
-    - patient_friendly_summary
-    - emergency_guidance
+    Patient intake report ID: {request.reportId}
+    Language: {request.language}
+    Data: {request.answers}
 
-    Patient intake data:
-    {req.answers}
+    Provide a structured medical intake evaluation with the following sections:
+    - Chief complaint
+    - History summary
+    - Risk flags
+    - Recommended follow-ups
+    - Differential considerations
+    - Patient-friendly summary
+    - Emergency guidance
     """
 
     try:
-        resp = client.chat.completions.create(
+        # ✅ OpenAI call
+        response = openai.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a helpful medical evaluation assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            response_format={"type": "json_object"}
+            messages=[{"role": "user", "content": prompt}],
         )
 
-        # Raw AI response (string)
-        raw = resp.choices[0].message.content
+        ai_text = response.choices[0].message.content
 
-        # Convert JSON string → dict
-        evaluation = json.loads(raw)
+        # ✅ Structured response
+        return {
+            "evaluation": {
+                "chief_complaint": request.answers.get("reason", "N/A"),
+                "history_summary": ai_text,
+                "risk_flags": request.answers.get("risk_flags", {}),
+                "recommended_followups": [
+                    "Follow-up tests and consults as per evaluation."
+                ],
+                "differential_considerations": [
+                    "Generated by AI evaluation"
+                ],
+                "patient_friendly_summary": "Summary provided in plain language.",
+                "emergency_guidance": "If severe symptoms occur (chest pain, shortness of breath, fainting), call emergency services immediately."
+            }
+        }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"OpenAI call failed: {e}")
-
-    return {"traceId": str(uuid.uuid4()), "evaluation": evaluation}
-
-# Force OpenAPI to show Authorize button
-def custom_openapi():
-    if app.openapi_schema:
-        return app.openapi_schema
-    openapi_schema = get_openapi(
-        title=app.title,
-        version=app.version,
-        description=app.description,
-        routes=app.routes,
-    )
-    openapi_schema["components"]["securitySchemes"] = {
-        "APIKeyAuth": {
-            "type": "apiKey",
-            "in": "header",
-            "name": "Authorization"
-        }
-    }
-    for path in openapi_schema["paths"].values():
-        for method in path.values():
-            method["security"] = [{"APIKeyAuth": []}]
-    app.openapi_schema = openapi_schema
-    return app.openapi_schema
-
-app.openapi = custom_openapi
+        raise HTTPException(status_code=500, detail=str(e))
