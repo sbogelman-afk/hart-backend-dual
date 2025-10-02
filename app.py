@@ -4,29 +4,27 @@ from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel
 import os
 
-# Security scheme
-security = HTTPBearer()
-
 app = FastAPI(
     title="HART Evaluation API",
     description="API backend for patient intake and AI evaluation",
     version="1.0.0",
-    openapi_tags=[{"name": "Evaluation", "description": "Endpoints for AI evaluation"}],
 )
 
-# Token from Heroku Config Vars
+# Read token from environment
 API_TOKEN = os.getenv("API_TOKEN", "hart-backend-secret-2025")
 
-# Validation
-def validate_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if credentials.credentials != API_TOKEN:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing token",
-        )
-    return credentials
+# Security scheme
+bearer_scheme = HTTPBearer()
 
-# Intake form schema
+def validate_token(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
+    if credentials is None or credentials.credentials != API_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authenticated"
+        )
+    return True
+
+# Intake schema
 class IntakeForm(BaseModel):
     name: str
     age: str
@@ -35,13 +33,11 @@ class IntakeForm(BaseModel):
     medications: str
     history: str
 
-# Endpoint
-@app.post("/evaluate", dependencies=[Depends(validate_token)], tags=["Evaluation"])
-async def evaluate(form: IntakeForm):
+@app.post("/evaluate", tags=["Evaluation"])
+async def evaluate(form: IntakeForm, authorized: bool = Depends(validate_token)):
     return {"message": f"Evaluation received for {form.name}"}
 
-
-# ---- Custom OpenAPI to pre-fill Swagger Authorize with token ----
+# Custom OpenAPI to prefill Swagger with token
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -61,14 +57,12 @@ def custom_openapi():
         }
     }
 
-    # Global security requirement
-    openapi_schema["security"] = [{"BearerAuth": []}]
-
-    # Inject default value so Swagger pre-fills it
-    openapi_schema["components"]["securitySchemes"]["BearerAuth"]["x-tokenDefault"] = API_TOKEN
+    # Default security applied
+    for path in openapi_schema["paths"].values():
+        for method in path.values():
+            method["security"] = [{"BearerAuth": []}]
 
     app.openapi_schema = openapi_schema
     return app.openapi_schema
-
 
 app.openapi = custom_openapi
