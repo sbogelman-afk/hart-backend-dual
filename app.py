@@ -7,7 +7,6 @@ import traceback
 
 app = FastAPI()
 
-# Security: simple token check
 API_TOKEN = os.getenv("API_TOKEN", "hart-backend-secret-2025")
 
 def verify_token(authorization: str = Header(None)):
@@ -17,7 +16,6 @@ def verify_token(authorization: str = Header(None)):
         raise HTTPException(status_code=403, detail="Not authenticated")
     return True
 
-# Flexible IntakeForm: all fields optional
 class IntakeForm(BaseModel):
     name: Optional[str] = None
     age: Optional[str] = None
@@ -28,9 +26,6 @@ class IntakeForm(BaseModel):
 
 @app.post("/evaluate")
 async def evaluate(data: IntakeForm, authorized: bool = Depends(verify_token)):
-    """
-    Take patient intake data, send to OpenAI, return structured evaluation.
-    """
     try:
         prompt = f"""
         Patient intake information:
@@ -51,7 +46,7 @@ async def evaluate(data: IntakeForm, authorized: bool = Depends(verify_token)):
         - Emergency guidance
         """
 
-        # ✅ Initialize OpenAI client (new SDK)
+        # ✅ Fixed: no "proxies"
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
         response = client.chat.completions.create(
@@ -59,10 +54,8 @@ async def evaluate(data: IntakeForm, authorized: bool = Depends(verify_token)):
             messages=[{"role": "user", "content": prompt}],
         )
 
-        evaluation = response.choices[0].message.content.strip()
-        return {"evaluation": evaluation}
+        return {"evaluation": response.choices[0].message.content.strip()}
 
     except Exception as e:
-        print("ERROR: Exception during evaluation")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
