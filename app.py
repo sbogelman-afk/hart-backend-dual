@@ -7,26 +7,27 @@ from pydantic import BaseModel
 from typing import List, Optional, Union, Dict
 from openai import OpenAI
 
-# Initialize app with Swagger security scheme
+# Initialize app
 app = FastAPI(
     title="HART Evaluation API",
     description="Backend service for evaluating patient intake forms with AI",
-    version="1.0.0"
+    version="1.0.0",
+    swagger_ui_init_oauth={"usePkceWithAuthorizationCodeGrant": True}
 )
 
-# Define Bearer security
+# Security: Bearer scheme for Swagger Authorize button
 bearer_scheme = HTTPBearer()
 
-# CORS setup (you can later restrict to your frontend domain)
+# CORS (frontend <-> backend communication)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # later restrict to your frontend domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Security: simple bearer token
+# Security token
 API_TOKEN = os.getenv("API_TOKEN", "hart-backend-secret-2025")
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
@@ -34,21 +35,14 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(bearer_sche
         raise HTTPException(status_code=403, detail="Not authenticated")
     return True
 
-# Extended Intake Form model to match frontend fields
+# Pydantic models
 class IntakeForm(BaseModel):
     name: str
     age: Union[int, str]
     gender: Optional[str] = None
-    phone: Optional[str] = None
-    email: Optional[str] = None
     symptoms: List[str]
     history: Optional[str] = None
     medications: Optional[str] = None
-    allergies: Optional[str] = None
-    smoking: Optional[str] = None  # Dropdown Yes/No/Occasional
-    alcohol: Optional[str] = None  # Dropdown Yes/No/Occasional
-    exercise: Optional[str] = None
-    notes: Optional[str] = None
 
 class EvaluationResult(BaseModel):
     chief_complaint: str
@@ -67,6 +61,9 @@ client = OpenAI(api_key=OPENAI_KEY)
 
 @app.post("/evaluate", response_model=EvaluationResult, dependencies=[Depends(verify_token)])
 async def evaluate_patient(data: IntakeForm):
+    """
+    Evaluate patient intake form using OpenAI GPT
+    """
     try:
         prompt = f"""
         You are a medical AI assistant. Analyze the following intake:
@@ -79,8 +76,13 @@ async def evaluate_patient(data: IntakeForm):
         Medications: {data.medications}
 
         Provide a structured analysis in JSON with keys:
-        chief_complaint, history_summary, risk_flags, recommended_followups,
-        differential_considerations, patient_friendly_summary, emergency_guidance
+        - chief_complaint
+        - history_summary
+        - risk_flags (dict, but keep values as strings not booleans)
+        - recommended_followups (list)
+        - differential_considerations (list)
+        - patient_friendly_summary
+        - emergency_guidance
         """
 
         response = client.chat.completions.create(
@@ -100,19 +102,22 @@ async def evaluate_patient(data: IntakeForm):
                 return str(val)
             if isinstance(val, dict):
                 return json.dumps(val)
-            return val
+            if isinstance(val, list):
+                return ", ".join(map(str, val))
+            return str(val)
 
-        # Ensure all fields are strings where required
         evaluation["history_summary"] = str(evaluation.get("history_summary", ""))
 
         if "risk_flags" in evaluation:
-            evaluation["risk_flags"] = {
-                k: normalize(v) for k, v in evaluation["risk_flags"].items()
-            }
+            rf = evaluation["risk_flags"]
+            if isinstance(rf, dict):
+                evaluation["risk_flags"] = {k: normalize(v) for k, v in rf.items()}
+            elif isinstance(rf, list):
+                evaluation["risk_flags"] = {f"flag_{i+1}": normalize(v) for i, v in enumerate(rf)}
+            else:
+                evaluation["risk_flags"] = {"note": normalize(rf)}
 
         return evaluation
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
