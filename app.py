@@ -72,30 +72,18 @@ async def evaluate_patient(data: IntakeForm):
     """
     try:
         prompt = f"""
-        You are a medical AI assistant. Analyze the following patient intake:
+        You are a medical AI assistant. Analyze the following intake:
 
         Name: {data.name}
         Age: {data.age}
         Gender: {data.gender}
-        Phone: {data.phone}
-        Email: {data.email}
         Symptoms: {", ".join(data.symptoms)}
         History: {data.history}
         Medications: {data.medications}
-        Allergies: {data.allergies}
-        Smoking: {data.smoking}
-        Alcohol: {data.alcohol}
-        Exercise: {data.exercise}
-        Notes: {data.notes}
 
         Provide a structured analysis in JSON with keys:
-        - chief_complaint
-        - history_summary
-        - risk_flags (dict with any important risk factors)
-        - recommended_followups (list)
-        - differential_considerations (list)
-        - patient_friendly_summary
-        - emergency_guidance
+        chief_complaint, history_summary, risk_flags, recommended_followups,
+        differential_considerations, patient_friendly_summary, emergency_guidance
         """
 
         response = client.chat.completions.create(
@@ -104,10 +92,20 @@ async def evaluate_patient(data: IntakeForm):
             response_format={"type": "json_object"}
         )
 
+        # DEBUG LOGGING – print entire response object to Heroku logs
+        import sys
+        print("DEBUG OpenAI raw response:", response, file=sys.stderr)
+
+        # Try to parse safely
         ai_content = response.choices[0].message.content
+        print("DEBUG OpenAI content only:", ai_content, file=sys.stderr)
+
         evaluation = json.loads(ai_content)
 
         return evaluation
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()  # full stack trace to Heroku logs
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
