@@ -1,68 +1,65 @@
-from fastapi import FastAPI, Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.openapi.utils import get_openapi
+from fastapi import FastAPI, Depends, Header, HTTPException
 from pydantic import BaseModel
+from typing import Optional, List
 import os
+import openai
 
-app = FastAPI(
-    title="HART Evaluation API",
-    description="API backend for patient intake and AI evaluation",
-    version="1.0.0",
-)
+app = FastAPI()
 
-# Read token from environment
+# Security: simple token check
 API_TOKEN = os.getenv("API_TOKEN", "hart-backend-secret-2025")
 
-# Security scheme
-bearer_scheme = HTTPBearer()
-
-def validate_token(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
-    if credentials is None or credentials.credentials != API_TOKEN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authenticated"
-        )
+def verify_token(authorization: str = Header(None)):
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    if authorization != f"Bearer {API_TOKEN}":
+        raise HTTPException(status_code=403, detail="Not authenticated")
     return True
 
-# Intake schema
+# Flexible IntakeForm: all fields optional
 class IntakeForm(BaseModel):
-    name: str
-    age: str
-    gender: str
-    symptoms: list[str]
-    medications: str
-    history: str
+    name: Optional[str] = None
+    age: Optional[str] = None
+    gender: Optional[str] = None
+    symptoms: Optional[List[str]] = []
+    medications: Optional[str] = None
+    history: Optional[str] = None
 
-@app.post("/evaluate", tags=["Evaluation"])
-async def evaluate(form: IntakeForm, authorized: bool = Depends(validate_token)):
-    return {"message": f"Evaluation received for {form.name}"}
+@app.post("/evaluate")
+async def evaluate(data: IntakeForm, authorized: bool = Depends(verify_token)):
+    """
+    Take patient intake data, send to OpenAI, return structured evaluation.
+    """
+    try:
+        # Build prompt for AI
+        prompt = f"""
+        Patient intake information:
+        Name: {data.name}
+        Age: {data.age}
+        Gender: {data.gender}
+        Symptoms: {", ".join(data.symptoms) if data.symptoms else "None"}
+        Medications: {data.medications}
+        History: {data.history}
 
-# Custom OpenAPI to prefill Swagger with token
-def custom_openapi():
-    if app.openapi_schema:
-        return app.openapi_schema
+        Please provide:
+        - Chief complaint
+        - Summary
+        - Risk flags
+        - Recommended followups
+        - Differential considerations
+        - Patient-friendly explanation
+        - Emergency guidance
+        """
 
-    openapi_schema = get_openapi(
-        title=app.title,
-        version=app.version,
-        description=app.description,
-        routes=app.routes,
-    )
+        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+        )
 
-    openapi_schema["components"]["securitySchemes"] = {
-        "BearerAuth": {
-            "type": "http",
-            "scheme": "bearer",
-            "bearerFormat": "JWT",
-        }
-    }
+        evaluation = response.choices[0].message.content.strip()
 
-    # Default security applied
-    for path in openapi_schema["paths"].values():
-        for method in path.values():
-            method["security"] = [{"BearerAuth": []}]
+        return {"evaluation": evaluation}
 
-    app.openapi_schema = openapi_schema
-    return app.openapi_schema
-
-app.openapi = custom_openapi
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
