@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 import os
 import openai
+import traceback
 
 app = FastAPI()
 
@@ -31,7 +32,6 @@ async def evaluate(data: IntakeForm, authorized: bool = Depends(verify_token)):
     Take patient intake data, send to OpenAI, return structured evaluation.
     """
     try:
-        # Build prompt for AI
         prompt = f"""
         Patient intake information:
         Name: {data.name}
@@ -51,15 +51,26 @@ async def evaluate(data: IntakeForm, authorized: bool = Depends(verify_token)):
         - Emergency guidance
         """
 
+        # Debug log: show we are about to call OpenAI
+        print("DEBUG: Sending prompt to OpenAI...")
+
         client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
         )
 
+        # Debug log: show raw response keys
+        print("DEBUG: OpenAI response keys:", response.__dict__.keys())
+
         evaluation = response.choices[0].message.content.strip()
+
+        # Debug log: show partial evaluation
+        print("DEBUG: Evaluation preview:", evaluation[:200])
 
         return {"evaluation": evaluation}
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print("ERROR: Exception during evaluation")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
