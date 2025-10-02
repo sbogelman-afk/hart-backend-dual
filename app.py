@@ -1,77 +1,74 @@
-import os
-from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel
-from typing import Optional
-from fastapi.middleware.cors import CORSMiddleware
-import openai
+import os
 
-app = FastAPI()
+# Security scheme
+security = HTTPBearer()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+app = FastAPI(
+    title="HART Evaluation API",
+    description="API backend for patient intake and AI evaluation",
+    version="1.0.0",
+    openapi_tags=[{"name": "Evaluation", "description": "Endpoints for AI evaluation"}],
 )
 
-API_TOKEN = os.getenv("API_TOKEN")
+# Token from Heroku Config Vars
+API_TOKEN = os.getenv("API_TOKEN", "hart-backend-secret-2025")
 
-def authenticate(authorization: str = Header(...)):
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
-    token = authorization.split(" ")[1]
-    if token != API_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid API token")
-    return token
-
-class IntakeForm(BaseModel):
-    chief_complaint: Optional[str] = None
-    history: Optional[str] = None
-    medications: Optional[str] = None
-    allergies: Optional[str] = None
-    chest_pain: Optional[str] = None
-    palpitations: Optional[str] = None
-    shortness_breath: Optional[str] = None
-    fainting: Optional[str] = None
-    risk_flags: Optional[str] = None
-    general_symptoms: Optional[str] = None
-
-openai.api_key = os.getenv("OPENAI_API_KEY")
-
-@app.get("/")
-def home():
-    return {"message": "HART Backend Running"}
-
-@app.post("/evaluate")
-async def evaluate(data: IntakeForm, token: str = Depends(authenticate)):
-    answers = data.dict()
-    clean_answers = {k: v for k, v in answers.items() if v is not None}
-
-    prompt = f"""
-    You are a medical AI assistant. Evaluate this intake form data and provide:
-    - Chief complaint
-    - History summary
-    - Notable risk flags
-    - Recommended follow-ups
-    - Possible differential considerations
-    - A patient-friendly summary
-    - Emergency guidance if needed
-
-    Intake data:
-    {clean_answers}
-    """
-
-    try:
-        response = openai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a careful medical assistant helping to interpret intake forms."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=500
+# Validation
+def validate_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    if credentials.credentials != API_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing token",
         )
-        evaluation = response.choices[0].message.content.strip()
-        return {"evaluation": evaluation, "submitted_data": clean_answers}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return credentials
+
+# Intake form schema
+class IntakeForm(BaseModel):
+    name: str
+    age: str
+    gender: str
+    symptoms: list[str]
+    medications: str
+    history: str
+
+# Endpoint
+@app.post("/evaluate", dependencies=[Depends(validate_token)], tags=["Evaluation"])
+async def evaluate(form: IntakeForm):
+    return {"message": f"Evaluation received for {form.name}"}
+
+
+# ---- Custom OpenAPI to pre-fill Swagger Authorize with token ----
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+
+    openapi_schema["components"]["securitySchemes"] = {
+        "BearerAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+        }
+    }
+
+    # Global security requirement
+    openapi_schema["security"] = [{"BearerAuth": []}]
+
+    # Inject default value so Swagger pre-fills it
+    openapi_schema["components"]["securitySchemes"]["BearerAuth"]["x-tokenDefault"] = API_TOKEN
+
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
