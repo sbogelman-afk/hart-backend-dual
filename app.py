@@ -51,22 +51,15 @@ async def evaluate(data: IntakeForm, authorized: bool = Depends(verify_token)):
         - Emergency guidance
         """
 
-        # Debug log: show we are about to call OpenAI
-        print("DEBUG: Sending prompt to OpenAI...")
+        # Set API key globally (compatible with your Heroku setup)
+        openai.api_key = os.getenv("OPENAI_API_KEY")
 
-        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        response = client.chat.completions.create(
+        response = openai.ChatCompletion.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
         )
 
-        # Debug log: show raw response keys
-        print("DEBUG: OpenAI response keys:", response.__dict__.keys())
-
-        evaluation = response.choices[0].message.content.strip()
-
-        # Debug log: show partial evaluation
-        print("DEBUG: Evaluation preview:", evaluation[:200])
+        evaluation = response.choices[0].message["content"].strip()
 
         return {"evaluation": evaluation}
 
