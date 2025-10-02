@@ -1,81 +1,93 @@
-from fastapi import FastAPI, Depends, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
 import os
+from fastapi import FastAPI, Depends, HTTPException, Header
+from pydantic import BaseModel
+from typing import Optional
+from fastapi.middleware.cors import CORSMiddleware
 import openai
 
-# Initialize app
-app = FastAPI(title="HART Evaluation API")
+# --- FastAPI app ---
+app = FastAPI()
 
-# Security: require Bearer token
-security = HTTPBearer()
-API_TOKEN = os.getenv("API_TOKEN")
-
-# Restrict CORS to Netlify frontend only
+# --- CORS (allow frontend on Netlify to call backend) ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://hartintake.netlify.app"],  # ✅ restrict here
+    allow_origins=["*"],  # you can restrict to your Netlify domain later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Pydantic request model
-class IntakeData(BaseModel):
-    reportId: str
-    language: str = "en"
-    answers: dict
+# --- Authentication (Bearer token) ---
+API_TOKEN = os.getenv("API_TOKEN")
 
-# Protect all routes with API token
-def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if credentials.scheme != "Bearer" or credentials.credentials != API_TOKEN:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+def authenticate(authorization: str = Header(...)):
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    token = authorization.split(" ")[1]
+    if token != API_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid API token")
+    return token
 
-# Root (just a sanity check, not exposed in Swagger)
+# --- IntakeForm schema ---
+class IntakeForm(BaseModel):
+    chief_complaint: Optional[str] = None
+    history: Optional[str] = None
+    medications: Optional[str] = None
+    allergies: Optional[str] = None
+    chest_pain: Optional[str] = None
+    palpitations: Optional[str] = None
+    shortness_breath: Optional[str] = None
+    fainting: Optional[str] = None
+
+    # New fields
+    risk_flags: Optional[str] = None         # emergency red flags
+    general_symptoms: Optional[str] = None   # general complaints
+
+# --- OpenAI config ---
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
+# --- Routes ---
 @app.get("/")
-def root():
-    return {"message": "HART backend is running"}
+def home():
+    return {"message": "HART Backend Running"}
 
-# Evaluation route
 @app.post("/evaluate")
-async def evaluate(data: IntakeData, creds: HTTPAuthorizationCredentials = Depends(verify_token)):
+async def evaluate(data: IntakeForm, token: str = Depends(authenticate)):
+    answers = data.dict()
+    # remove None values
+    clean_answers = {k: v for k, v in answers.items() if v is not None}
+
+    # Build a simple evaluation prompt
+    prompt = f"""
+    You are a medical AI assistant. Evaluate this intake form data and provide:
+    - Chief complaint
+    - History summary
+    - Notable risk flags
+    - Recommended follow-ups
+    - Possible differential considerations
+    - A patient-friendly summary
+    - Emergency guidance if needed
+
+    Intake data:
+    {clean_answers}
+    """
+
     try:
-        # Generate structured evaluation with OpenAI
-        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-        user_text = f"""
-        Patient Report ID: {data.reportId}
-        Language: {data.language}
-        Intake Answers: {data.answers}
-        """
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",  # can change to gpt-4o or gpt-4.1 if available
             messages=[
-                {"role": "system", "content": "You are a medical assistant that summarizes patient intake forms into structured evaluations."},
-                {"role": "user", "content": user_text}
-            ]
+                {"role": "system", "content": "You are a careful medical assistant helping to interpret intake forms."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=500
         )
 
-        ai_text = response.choices[0].message.content
+        evaluation = response.choices[0].message.content.strip()
 
-        # Return structured response
         return {
-            "evaluation": {
-                "chief_complaint": data.answers.get("reason", "N/A"),
-                "history_summary": ai_text,
-                "risk_flags": {
-                    "age": data.answers.get("age", "N/A"),
-                    "symptoms": data.answers.get("symptoms", []),
-                },
-                "recommended_followups": [
-                    "Schedule primary care follow-up",
-                    "Run diagnostic labs if indicated"
-                ],
-                "patient_friendly_summary": "Your intake has been reviewed. Follow the doctor’s instructions and complete recommended tests.",
-                "emergency_guidance": "If you experience chest pain, fainting, or severe shortness of breath, call 911 immediately."
-            }
+            "evaluation": evaluation,
+            "submitted_data": clean_answers
         }
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
