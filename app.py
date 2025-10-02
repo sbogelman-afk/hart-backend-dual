@@ -1,21 +1,29 @@
 import os
+import json
 from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import List, Optional, Union
 from openai import OpenAI
 
-# Initialize app
+# Initialize app with explicit OpenAPI security scheme
 app = FastAPI(
     title="HART Evaluation API",
     description="Backend service for evaluating patient intake forms with AI",
-    version="1.0.0"
+    version="1.0.0",
+    swagger_ui_init_oauth={
+        "usePkceWithAuthorizationCodeGrant": True
+    }
 )
+
+# Define Bearer security for Swagger Authorize button
+bearer_scheme = HTTPBearer()
 
 # CORS (so frontend can talk to backend)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # you can restrict to your frontend domain later
+    allow_origins=["*"],  # you can restrict this to your frontend domain later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -24,18 +32,15 @@ app.add_middleware(
 # Security: simple bearer token
 API_TOKEN = os.getenv("API_TOKEN", "hart-backend-secret-2025")
 
-def verify_token(authorization: str = Header(...)):
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=403, detail="Invalid authorization header")
-    token = authorization.split(" ")[1]
-    if token != API_TOKEN:
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
+    if credentials.credentials != API_TOKEN:
         raise HTTPException(status_code=403, detail="Not authenticated")
     return True
 
 # Pydantic models
 class IntakeForm(BaseModel):
     name: str
-    age: Union[int, str]  # <-- forgiving: accepts number or string
+    age: Union[int, str]  # accepts number or string
     gender: Optional[str] = None
     symptoms: List[str]
     history: Optional[str] = None
@@ -89,7 +94,6 @@ async def evaluate_patient(data: IntakeForm):
         )
 
         ai_content = response.choices[0].message.content
-        import json
         evaluation = json.loads(ai_content)
 
         return evaluation
