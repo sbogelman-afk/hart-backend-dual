@@ -67,9 +67,6 @@ client = OpenAI(api_key=OPENAI_KEY)
 
 @app.post("/evaluate", response_model=EvaluationResult, dependencies=[Depends(verify_token)])
 async def evaluate_patient(data: IntakeForm):
-    """
-    Evaluate patient intake form using OpenAI GPT
-    """
     try:
         prompt = f"""
         You are a medical AI assistant. Analyze the following intake:
@@ -92,20 +89,30 @@ async def evaluate_patient(data: IntakeForm):
             response_format={"type": "json_object"}
         )
 
-        # DEBUG LOGGING – print entire response object to Heroku logs
-        import sys
-        print("DEBUG OpenAI raw response:", response, file=sys.stderr)
-
-        # Try to parse safely
         ai_content = response.choices[0].message.content
-        print("DEBUG OpenAI content only:", ai_content, file=sys.stderr)
-
         evaluation = json.loads(ai_content)
+
+        # --- Normalization step ---
+        def normalize(val):
+            if isinstance(val, bool):
+                return "Yes" if val else "No"
+            if isinstance(val, (int, float)):
+                return str(val)
+            if isinstance(val, dict):
+                return json.dumps(val)
+            return val
+
+        # Ensure all fields are strings where required
+        evaluation["history_summary"] = str(evaluation.get("history_summary", ""))
+
+        if "risk_flags" in evaluation:
+            evaluation["risk_flags"] = {
+                k: normalize(v) for k, v in evaluation["risk_flags"].items()
+            }
 
         return evaluation
 
     except Exception as e:
         import traceback
-        traceback.print_exc()  # full stack trace to Heroku logs
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
-
