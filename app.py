@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, Header, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 import os
-import openai
+from openai import OpenAI
 import traceback
 
 app = FastAPI()
@@ -51,16 +51,15 @@ async def evaluate(data: IntakeForm, authorized: bool = Depends(verify_token)):
         - Emergency guidance
         """
 
-        # Set API key globally (compatible with your Heroku setup)
-        openai.api_key = os.getenv("OPENAI_API_KEY")
+        # ✅ Initialize OpenAI client (new SDK)
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
         )
 
-        evaluation = response.choices[0].message["content"].strip()
-
+        evaluation = response.choices[0].message.content.strip()
         return {"evaluation": evaluation}
 
     except Exception as e:
