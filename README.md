@@ -1,0 +1,1 @@
+# HART Backend\n\nFastAPI backend for patient intake form evaluation.
