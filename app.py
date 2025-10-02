@@ -1,45 +1,98 @@
-from fastapi import FastAPI, Depends, HTTPException, Header
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
 import os
+from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Optional, Union
 from openai import OpenAI
 
-app = FastAPI(title="HART Evaluation API")
+# Initialize app
+app = FastAPI(
+    title="HART Evaluation API",
+    description="Backend service for evaluating patient intake forms with AI",
+    version="1.0.0"
+)
 
-# --- Security ---
-security = HTTPBearer()  
-API_TOKEN = os.getenv("API_TOKEN", "hart-backend-secret-2025")  # fallback if env not set
+# CORS (so frontend can talk to backend)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # you can restrict to your frontend domain later
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if credentials.credentials != API_TOKEN:
+# Security: simple bearer token
+API_TOKEN = os.getenv("API_TOKEN", "hart-backend-secret-2025")
+
+def verify_token(authorization: str = Header(...)):
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=403, detail="Invalid authorization header")
+    token = authorization.split(" ")[1]
+    if token != API_TOKEN:
         raise HTTPException(status_code=403, detail="Not authenticated")
-    return credentials
+    return True
 
-# --- Data Model ---
+# Pydantic models
 class IntakeForm(BaseModel):
     name: str
-    age: int
-    gender: str
-    symptoms: list[str] = []
-    medical_history: str | None = None
+    age: Union[int, str]  # <-- forgiving: accepts number or string
+    gender: Optional[str] = None
+    symptoms: List[str]
+    history: Optional[str] = None
+    medications: Optional[str] = None
 
-# --- Routes ---
-@app.get("/")
-def root():
-    return {"message": "HART backend running. Use /docs for API documentation."}
+class EvaluationResult(BaseModel):
+    chief_complaint: str
+    history_summary: str
+    risk_flags: dict
+    recommended_followups: List[str]
+    differential_considerations: List[str]
+    patient_friendly_summary: str
+    emergency_guidance: str
 
-@app.post("/evaluate")
-def evaluate(form: IntakeForm, creds: HTTPAuthorizationCredentials = Depends(verify_token)):
+# OpenAI client
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_KEY:
+    raise RuntimeError("OPENAI_API_KEY not set in environment")
+client = OpenAI(api_key=OPENAI_KEY)
+
+@app.post("/evaluate", response_model=EvaluationResult, dependencies=[Depends(verify_token)])
+async def evaluate_patient(data: IntakeForm):
+    """
+    Evaluate patient intake form using OpenAI GPT
+    """
     try:
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        prompt = f"""
+        You are a medical AI assistant. Analyze the following intake:
+
+        Name: {data.name}
+        Age: {data.age}
+        Gender: {data.gender}
+        Symptoms: {", ".join(data.symptoms)}
+        History: {data.history}
+        Medications: {data.medications}
+
+        Provide a structured analysis in JSON with keys:
+        - chief_complaint
+        - history_summary
+        - risk_flags (dict)
+        - recommended_followups (list)
+        - differential_considerations (list)
+        - patient_friendly_summary
+        - emergency_guidance
+        """
+
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a medical AI assistant evaluating intake forms."},
-                {"role": "user", "content": f"Evaluate this patient form: {form.model_dump_json()}"}
-            ],
-            max_tokens=300
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
         )
-        return {"evaluation": response.choices[0].message.content}
+
+        ai_content = response.choices[0].message.content
+        import json
+        evaluation = json.loads(ai_content)
+
+        return evaluation
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
