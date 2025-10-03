@@ -4,30 +4,29 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from typing import List, Optional, Union, Dict
+from typing import List, Optional, Union, Dict, Any
 from openai import OpenAI
 
-# Initialize app
+# Initialize app with OpenAPI security scheme
 app = FastAPI(
     title="HART Evaluation API",
     description="Backend service for evaluating patient intake forms with AI",
-    version="1.0.0",
-    swagger_ui_init_oauth={"usePkceWithAuthorizationCodeGrant": True}
+    version="1.0.0"
 )
 
-# Security: Bearer scheme for Swagger Authorize button
+# Define Bearer security for Swagger Authorize button
 bearer_scheme = HTTPBearer()
 
-# CORS (frontend <-> backend communication)
+# CORS (so frontend can talk to backend)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # later restrict to your frontend domain
+    allow_origins=["*"],  # restrict to frontend domain later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Security token
+# Security: simple bearer token
 API_TOKEN = os.getenv("API_TOKEN", "hart-backend-secret-2025")
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
@@ -38,11 +37,12 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(bearer_sche
 # Pydantic models
 class IntakeForm(BaseModel):
     name: str
-    age: Union[int, str]
+    age: Union[int, str]  # accepts number or string
     gender: Optional[str] = None
     symptoms: List[str]
     history: Optional[str] = None
     medications: Optional[str] = None
+    lifestyle: Optional[Dict[str, str]] = None  # smoking, alcohol
 
 class EvaluationResult(BaseModel):
     chief_complaint: str
@@ -52,12 +52,68 @@ class EvaluationResult(BaseModel):
     differential_considerations: List[str]
     patient_friendly_summary: str
     emergency_guidance: str
+    formatted_report: str
 
 # OpenAI client
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_KEY:
     raise RuntimeError("OPENAI_API_KEY not set in environment")
 client = OpenAI(api_key=OPENAI_KEY)
+
+# Formatter for polished report
+def format_report(evaluation: dict, patient: IntakeForm) -> str:
+    """Format evaluation JSON into a polished report string"""
+    report = f"""
+    ======================================
+              Patient Evaluation Report
+    ======================================
+
+    Patient: {patient.name}
+    Age: {patient.age}
+    Gender: {patient.gender or "Not specified"}
+
+    --------------------------------------
+    Chief Complaint
+    --------------------------------------
+    {evaluation.get('chief_complaint', 'N/A')}
+
+    --------------------------------------
+    History Summary
+    --------------------------------------
+    {evaluation.get('history_summary', 'N/A')}
+
+    --------------------------------------
+    Risk Flags
+    --------------------------------------
+    """
+    for key, value in evaluation.get("risk_flags", {}).items():
+        report += f"- {key}: {value}\n"
+
+    report += f"""
+
+    --------------------------------------
+    Recommended Follow-ups
+    --------------------------------------
+    {''.join(f'- {item}\n' for item in evaluation.get('recommended_followups', []))}
+
+    --------------------------------------
+    Differential Considerations
+    --------------------------------------
+    {''.join(f'- {item}\n' for item in evaluation.get('differential_considerations', []))}
+
+    --------------------------------------
+    Patient-Friendly Summary
+    --------------------------------------
+    {evaluation.get('patient_friendly_summary', 'N/A')}
+
+    --------------------------------------
+    Emergency Guidance
+    --------------------------------------
+    🚨 {evaluation.get('emergency_guidance', 'N/A')} 🚨
+    """
+
+    return report.strip()
+
 
 @app.post("/evaluate", response_model=EvaluationResult, dependencies=[Depends(verify_token)])
 async def evaluate_patient(data: IntakeForm):
@@ -74,15 +130,16 @@ async def evaluate_patient(data: IntakeForm):
         Symptoms: {", ".join(data.symptoms)}
         History: {data.history}
         Medications: {data.medications}
+        Lifestyle: {data.lifestyle}
 
         Provide a structured analysis in JSON with keys:
-        - chief_complaint
-        - history_summary
-        - risk_flags (dict, but keep values as strings not booleans)
-        - recommended_followups (list)
-        - differential_considerations (list)
-        - patient_friendly_summary
-        - emergency_guidance
+        - chief_complaint (string)
+        - history_summary (string)
+        - risk_flags (dictionary with string values only)
+        - recommended_followups (list of strings)
+        - differential_considerations (list of strings)
+        - patient_friendly_summary (string)
+        - emergency_guidance (string)
         """
 
         response = client.chat.completions.create(
@@ -94,28 +151,13 @@ async def evaluate_patient(data: IntakeForm):
         ai_content = response.choices[0].message.content
         evaluation = json.loads(ai_content)
 
-        # --- Normalization step ---
-        def normalize(val):
-            if isinstance(val, bool):
-                return "Yes" if val else "No"
-            if isinstance(val, (int, float)):
-                return str(val)
-            if isinstance(val, dict):
-                return json.dumps(val)
-            if isinstance(val, list):
-                return ", ".join(map(str, val))
-            return str(val)
+        # Ensure risk_flags are strings
+        evaluation["risk_flags"] = {
+            k: str(v) for k, v in evaluation.get("risk_flags", {}).items()
+        }
 
-        evaluation["history_summary"] = str(evaluation.get("history_summary", ""))
-
-        if "risk_flags" in evaluation:
-            rf = evaluation["risk_flags"]
-            if isinstance(rf, dict):
-                evaluation["risk_flags"] = {k: normalize(v) for k, v in rf.items()}
-            elif isinstance(rf, list):
-                evaluation["risk_flags"] = {f"flag_{i+1}": normalize(v) for i, v in enumerate(rf)}
-            else:
-                evaluation["risk_flags"] = {"note": normalize(rf)}
+        # Format report
+        evaluation["formatted_report"] = format_report(evaluation, data)
 
         return evaluation
 
