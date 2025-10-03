@@ -160,3 +160,64 @@ async def evaluate_patient(data: IntakeForm):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+from fastapi.responses import FileResponse
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+import tempfile
+
+@app.post("/export-pdf", dependencies=[Depends(verify_token)])
+async def export_pdf(data: EvaluationResult):
+    """
+    Export the evaluation result as a formatted PDF.
+    """
+    try:
+        # Create a temporary file for PDF
+        tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        doc = SimpleDocTemplate(tmp_file.name, pagesize=letter)
+        styles = getSampleStyleSheet()
+        flowables = []
+
+        # Title
+        flowables.append(Paragraph("❤️ HART Patient Evaluation Report", styles["Title"]))
+        flowables.append(Spacer(1, 12))
+
+        # Sections
+        flowables.append(Paragraph("<b>Chief Complaint</b>", styles["Heading2"]))
+        flowables.append(Paragraph(data.chief_complaint, styles["Normal"]))
+        flowables.append(Spacer(1, 12))
+
+        flowables.append(Paragraph("<b>History Summary</b>", styles["Heading2"]))
+        flowables.append(Paragraph(data.history_summary, styles["Normal"]))
+        flowables.append(Spacer(1, 12))
+
+        flowables.append(Paragraph("<b>Risk Flags</b>", styles["Heading2"]))
+        for k, v in data.risk_flags.items():
+            flowables.append(Paragraph(f"- {k}: {v}", styles["Normal"]))
+        flowables.append(Spacer(1, 12))
+
+        flowables.append(Paragraph("<b>Recommended Follow-ups</b>", styles["Heading2"]))
+        for item in data.recommended_followups:
+            flowables.append(Paragraph(f"- {item}", styles["Normal"]))
+        flowables.append(Spacer(1, 12))
+
+        flowables.append(Paragraph("<b>Differential Considerations</b>", styles["Heading2"]))
+        for item in data.differential_considerations:
+            flowables.append(Paragraph(f"- {item}", styles["Normal"]))
+        flowables.append(Spacer(1, 12))
+
+        flowables.append(Paragraph("<b>Patient-Friendly Summary</b>", styles["Heading2"]))
+        flowables.append(Paragraph(data.patient_friendly_summary, styles["Normal"]))
+        flowables.append(Spacer(1, 12))
+
+        flowables.append(Paragraph("<b>Emergency Guidance</b>", styles["Heading2"]))
+        flowables.append(Paragraph(f"🚨 {data.emergency_guidance} 🚨", styles["Normal"]))
+
+        # Build PDF
+        doc.build(flowables)
+
+        return FileResponse(tmp_file.name, media_type="application/pdf", filename="HART_Report.pdf")
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF export failed: {str(e)}")
