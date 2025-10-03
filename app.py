@@ -89,17 +89,14 @@ def format_report(evaluation: dict, patient: IntakeForm) -> str:
     for key, value in evaluation.get("risk_flags", {}).items():
         report += f"- {key}: {value}\n"
 
+    # FIXED here: no backslashes in f-string braces
+    report += "\n\n--------------------------------------\nRecommended Follow-ups\n--------------------------------------\n"
+    report += "".join([f"- {item}\n" for item in evaluation.get("recommended_followups", [])])
+
+    report += "\n\n--------------------------------------\nDifferential Considerations\n--------------------------------------\n"
+    report += "".join([f"- {item}\n" for item in evaluation.get("differential_considerations", [])])
+
     report += f"""
-
-    --------------------------------------
-    Recommended Follow-ups
-    --------------------------------------
-    {''.join(f'- {item}\n' for item in evaluation.get('recommended_followups', []))}
-
-    --------------------------------------
-    Differential Considerations
-    --------------------------------------
-    {''.join(f'- {item}\n' for item in evaluation.get('differential_considerations', []))}
 
     --------------------------------------
     Patient-Friendly Summary
@@ -121,25 +118,26 @@ async def evaluate_patient(data: IntakeForm):
     Evaluate patient intake form using OpenAI GPT
     """
     try:
-        # Build prompt safely to avoid f-string backslash issues
-        prompt = (
-            "You are a medical AI assistant. Analyze the following intake:\n\n"
-            f"Name: {data.name}\n"
-            f"Age: {data.age}\n"
-            f"Gender: {data.gender}\n"
-            f"Symptoms: {', '.join(data.symptoms)}\n"
-            f"History: {data.history}\n"
-            f"Medications: {data.medications}\n"
-            f"Lifestyle: {data.lifestyle}\n\n"
-            "Provide a structured analysis in JSON with keys:\n"
-            "- chief_complaint (string)\n"
-            "- history_summary (string)\n"
-            "- risk_flags (dictionary with string values only)\n"
-            "- recommended_followups (list of strings)\n"
-            "- differential_considerations (list of strings)\n"
-            "- patient_friendly_summary (string)\n"
-            "- emergency_guidance (string)\n"
-        )
+        prompt = f"""
+        You are a medical AI assistant. Analyze the following intake:
+
+        Name: {data.name}
+        Age: {data.age}
+        Gender: {data.gender}
+        Symptoms: {", ".join(data.symptoms)}
+        History: {data.history}
+        Medications: {data.medications}
+        Lifestyle: {data.lifestyle}
+
+        Provide a structured analysis in JSON with keys:
+        - chief_complaint (string)
+        - history_summary (string)
+        - risk_flags (dictionary with string values only)
+        - recommended_followups (list of strings)
+        - differential_considerations (list of strings)
+        - patient_friendly_summary (string)
+        - emergency_guidance (string)
+        """
 
         response = client.chat.completions.create(
             model="gpt-4o-mini",
