@@ -4,7 +4,7 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Optional, Union, Dict
 from openai import OpenAI
 
 # Initialize app with OpenAPI security scheme
@@ -121,26 +121,25 @@ async def evaluate_patient(data: IntakeForm):
     Evaluate patient intake form using OpenAI GPT
     """
     try:
-        prompt = f"""
-        You are a medical AI assistant. Analyze the following intake:
-
-        Name: {data.name}
-        Age: {data.age}
-        Gender: {data.gender}
-        Symptoms: {", ".join(data.symptoms)}
-        History: {data.history}
-        Medications: {data.medications}
-        Lifestyle: {data.lifestyle}
-
-        Provide a structured analysis in JSON with keys:
-        - chief_complaint (string)
-        - history_summary (string)
-        - risk_flags (dictionary with string values only)
-        - recommended_followups (list of strings)
-        - differential_considerations (list of strings)
-        - patient_friendly_summary (string)
-        - emergency_guidance (string)
-        """
+        # Build prompt safely to avoid f-string backslash issues
+        prompt = (
+            "You are a medical AI assistant. Analyze the following intake:\n\n"
+            f"Name: {data.name}\n"
+            f"Age: {data.age}\n"
+            f"Gender: {data.gender}\n"
+            f"Symptoms: {', '.join(data.symptoms)}\n"
+            f"History: {data.history}\n"
+            f"Medications: {data.medications}\n"
+            f"Lifestyle: {data.lifestyle}\n\n"
+            "Provide a structured analysis in JSON with keys:\n"
+            "- chief_complaint (string)\n"
+            "- history_summary (string)\n"
+            "- risk_flags (dictionary with string values only)\n"
+            "- recommended_followups (list of strings)\n"
+            "- differential_considerations (list of strings)\n"
+            "- patient_friendly_summary (string)\n"
+            "- emergency_guidance (string)\n"
+        )
 
         response = client.chat.completions.create(
             model="gpt-4o-mini",
