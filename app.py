@@ -221,3 +221,65 @@ async def export_pdf(data: EvaluationResult):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PDF export failed: {str(e)}")
+
+from fastapi.responses import FileResponse
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+import tempfile
+
+@app.post("/export-pdf")
+async def export_pdf(evaluation: EvaluationResult):
+    """
+    Export AI evaluation into a polished PDF
+    """
+    try:
+        # Create temporary PDF file
+        tmpfile = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        c = canvas.Canvas(tmpfile.name, pagesize=letter)
+        width, height = letter
+
+        # Header
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(200, height - 50, "HART - Patient Evaluation Report")
+
+        # Body
+        y = height - 100
+        c.setFont("Helvetica", 12)
+
+        def add_line(label, text):
+            nonlocal y
+            if y < 100:  # start new page
+                c.showPage()
+                y = height - 50
+                c.setFont("Helvetica", 12)
+            c.drawString(50, y, f"{label}: {text}")
+            y -= 20
+
+        add_line("Chief Complaint", evaluation.chief_complaint)
+        add_line("History Summary", evaluation.history_summary)
+
+        c.drawString(50, y, "Risk Flags:")
+        y -= 20
+        for k, v in evaluation.risk_flags.items():
+            add_line(f"- {k}", v)
+
+        c.drawString(50, y, "Recommended Follow-ups:")
+        y -= 20
+        for item in evaluation.recommended_followups:
+            add_line("-", item)
+
+        c.drawString(50, y, "Differential Considerations:")
+        y -= 20
+        for item in evaluation.differential_considerations:
+            add_line("-", item)
+
+        add_line("Patient-Friendly Summary", evaluation.patient_friendly_summary)
+        add_line("Emergency Guidance", evaluation.emergency_guidance)
+
+        # Save PDF
+        c.save()
+
+        return FileResponse(tmpfile.name, filename="Patient_Report.pdf")
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
